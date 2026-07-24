@@ -1,0 +1,1 @@
+* compressor: added support for wildcards (such as ``text/*`` or ``*``) in the compressor filter's ``content_type`` configuration to allow matching MIME type prefixes or all content types.
