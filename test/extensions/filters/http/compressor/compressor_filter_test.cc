@@ -2566,6 +2566,96 @@ TEST_F(CompressorPerRouteLibraryTest, GetCompressorFactoryUsesPerRoute) {
   EXPECT_EQ(per_route_factory.contentEncoding(), "test");
 }
 
+TEST_F(CompressorFilterTest, GlobalWildcardContentTypeSupport) {
+  setUpFilter(R"EOF(
+{
+  "compressor_library": {
+     "name": "test",
+     "typed_config": {
+       "@type": "type.googleapis.com/envoy.extensions.compression.gzip.compressor.v3.Gzip"
+     }
+  },
+  "response_direction_config": {
+    "common_config": {
+      "content_type": ["*"]
+    }
+  }
+}
+)EOF");
+
+  Http::TestRequestHeaderMapImpl req_headers1{{":path", "/"}, {":method", "GET"}, {"content-type", "application/json"}};
+  EXPECT_TRUE(config_->responseDirectionConfig().isContentTypeAllowed(req_headers1));
+
+  Http::TestRequestHeaderMapImpl req_headers2{{":path", "/"}, {":method", "GET"}, {"content-type", "random/type"}};
+  EXPECT_TRUE(config_->responseDirectionConfig().isContentTypeAllowed(req_headers2));
+}
+
+TEST_F(CompressorFilterTest, EdgeCasesContentTypeSupport) {
+  setUpFilter(R"EOF(
+{
+  "compressor_library": {
+     "name": "test",
+     "typed_config": {
+       "@type": "type.googleapis.com/envoy.extensions.compression.gzip.compressor.v3.Gzip"
+     }
+  },
+  "response_direction_config": {
+    "common_config": {
+      "content_type": [
+        "text/html",
+        "text/*"
+      ]
+    }
+  }
+}
+)EOF");
+
+  // Parameters after semicolon should be safely ignored during matching
+  Http::TestRequestHeaderMapImpl headers_params{{":path", "/"}, {":method", "GET"}, {"content-type", "text/html; charset=UTF-8"}};
+  EXPECT_TRUE(config_->responseDirectionConfig().isContentTypeAllowed(headers_params));
+
+  // Matching must be case-insensitive (TEXT/PLAIN matches text/*)
+  Http::TestRequestHeaderMapImpl headers_case{{":path", "/"}, {":method", "GET"}, {"content-type", "TEXT/PLAIN"}};
+  EXPECT_TRUE(config_->responseDirectionConfig().isContentTypeAllowed(headers_case));
+}
+
+TEST_F(CompressorFilterTest, MixedExactAndPrefixWildcardSupport) {
+  setUpFilter(R"EOF(
+{
+  "compressor_library": {
+     "name": "test",
+     "typed_config": {
+       "@type": "type.googleapis.com/envoy.extensions.compression.gzip.compressor.v3.Gzip"
+     }
+  },
+  "response_direction_config": {
+    "common_config": {
+      "content_type": [
+        "text/plain",
+        "application/*"
+      ]
+    }
+  }
+}
+)EOF");
+
+  // Exact match validation
+  Http::TestRequestHeaderMapImpl headers_exact{{":path", "/"}, {":method", "GET"}, {"content-type", "text/plain"}};
+  EXPECT_TRUE(config_->responseDirectionConfig().isContentTypeAllowed(headers_exact));
+
+  // Wildcard prefix match validation (application/json matching application/*)
+  Http::TestRequestHeaderMapImpl headers_wildcard1{{":path", "/"}, {":method", "GET"}, {"content-type", "application/json"}};
+  EXPECT_TRUE(config_->responseDirectionConfig().isContentTypeAllowed(headers_wildcard1));
+
+  // Additional subtype check under the prefix wildcard
+  Http::TestRequestHeaderMapImpl headers_wildcard2{{":path", "/"}, {":method", "GET"}, {"content-type", "application/ld+json"}};
+  EXPECT_TRUE(config_->responseDirectionConfig().isContentTypeAllowed(headers_wildcard2));
+
+  // Rejection check for items outside the mixed configuration
+  Http::TestRequestHeaderMapImpl headers_rejected{{":path", "/"}, {":method", "GET"}, {"content-type", "image/png"}};
+  EXPECT_FALSE(config_->responseDirectionConfig().isContentTypeAllowed(headers_rejected));
+}
+
 } // namespace
 } // namespace Compressor
 } // namespace HttpFilters

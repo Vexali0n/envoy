@@ -76,6 +76,23 @@ public:
 
     const CompressorStats& stats() const { return stats_; }
     const StringUtil::CaseUnorderedSet& contentTypeValues() const { return content_type_values_; }
+
+    
+    bool isContentTypeAllowedValue(absl::string_view lower_content_type) const {
+      if (has_global_wildcard_) {
+        return true;
+      }
+      if (content_type_values_.find(lower_content_type) != content_type_values_.end()) {
+        return true;
+      }
+      for (const auto& prefix : content_type_prefix_patterns_) {
+        if (absl::StartsWith(lower_content_type, prefix)) {
+          return true;
+        }
+      }
+      return false;
+    }
+
     uint32_t minimumLength() const { return min_content_length_; }
     bool isMinimumContentLength(const Http::RequestOrResponseHeaderMap& headers) const;
     bool isContentTypeAllowed(const Http::RequestOrResponseHeaderMap& headers) const;
@@ -91,10 +108,15 @@ public:
     static uint32_t contentLengthUint(Protobuf::uint32 length);
 
     static StringUtil::CaseUnorderedSet
-    contentTypeSet(const Protobuf::RepeatedPtrField<std::string>& types);
+    parseContentTypes(const Protobuf::RepeatedPtrField<std::string>& types, bool& has_global_wildcard,
+                      std::vector<std::string>& content_type_prefix_patterns);
 
     const uint32_t min_content_length_;
-    const StringUtil::CaseUnorderedSet content_type_values_;
+
+    bool has_global_wildcard_{false};
+    std::vector<std::string> content_type_prefix_patterns_;
+    StringUtil::CaseUnorderedSet content_type_values_;
+
     const CompressorStats stats_;
   };
 

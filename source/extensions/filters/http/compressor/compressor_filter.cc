@@ -94,7 +94,8 @@ CompressorFilterConfig::DirectionConfig::DirectionConfig(
     const std::string& stats_prefix, Stats::Scope& scope, Runtime::Loader& runtime)
     : compression_enabled_(proto_config.enabled(), runtime),
       min_content_length_{contentLengthUint(proto_config.min_content_length().value())},
-      content_type_values_(contentTypeSet(proto_config.content_type())),
+      content_type_values_(parseContentTypes(proto_config.content_type(), has_global_wildcard_, content_type_prefix_patterns_)),
+
       stats_{generateStats(stats_prefix, scope)} {}
 
 CompressorFilterConfig::CompressorFilterConfig(
@@ -110,12 +111,36 @@ CompressorFilterConfig::CompressorFilterConfig(
       compressor_factory_(std::move(compressor_factory)),
       choose_first_(proto_config.choose_first()) {}
 
-StringUtil::CaseUnorderedSet CompressorFilterConfig::DirectionConfig::contentTypeSet(
-    const Protobuf::RepeatedPtrField<std::string>& types) {
-  const auto& default_content_encodings = defaultContentEncoding();
-  return types.empty() ? StringUtil::CaseUnorderedSet(default_content_encodings.begin(),
-                                                      default_content_encodings.end())
-                       : StringUtil::CaseUnorderedSet(types.cbegin(), types.cend());
+StringUtil::CaseUnorderedSet CompressorFilterConfig::DirectionConfig::parseContentTypes(
+    const Protobuf::RepeatedPtrField<std::string>& types,
+    bool& has_global_wildcard,
+    std::vector<std::string>& prefix_patterns) {
+  
+  StringUtil::CaseUnorderedSet exact_set;
+  prefix_patterns.clear(); // Clear out any stale entries
+
+  if (types.empty()) {
+    const auto& default_content_encodings = defaultContentEncoding();
+    exact_set.insert(default_content_encodings.begin(), default_content_encodings.end());
+    return exact_set;
+  }
+
+  for (const auto& type : types) {
+    std::string trimmed = std::string(StringUtil::trim(type));
+    if (trimmed.empty()) {
+      continue;
+    }
+    if (trimmed == "*" || trimmed == "*/*") {
+      has_global_wildcard = true;
+    } else if (absl::EndsWith(trimmed, "/*")) {
+      std::string prefix = std::string(absl::StripSuffix(trimmed, "*"));
+      prefix_patterns.push_back(absl::AsciiStrToLower(prefix));
+    } else {
+      exact_set.insert(absl::AsciiStrToLower(trimmed));
+    }
+  }
+
+  return exact_set;
 }
 
 uint32_t CompressorFilterConfig::DirectionConfig::contentLengthUint(Protobuf::uint32 length) {
@@ -533,12 +558,9 @@ CompressorFilter::chooseEncoding(const Http::ResponseHeaderMap& headers) const {
     // "gzip;q=1,deflate;q=.5". The corresponding response content type is "application/javascript".
     // If "gzip" is not excluded from the decision process then it will take precedence over
     // "deflate" and the resulting response won't be compressed at all.
-    if (!content_type_value.empty() &&
-        !filter_config->responseDirectionConfig().contentTypeValues().empty()) {
-      auto iter =
-          filter_config->responseDirectionConfig().contentTypeValues().find(content_type_value);
-      if (iter == filter_config->responseDirectionConfig().contentTypeValues().end()) {
-        // Skip adding this filter to the list of allowed compressors.
+    if (!content_type_value.empty()) {
+      std::string lower_type = absl::AsciiStrToLower(content_type_value);
+      if (!filter_config->responseDirectionConfig().isContentTypeAllowedValue(lower_type)) {
         continue;
       }
     }
@@ -713,11 +735,32 @@ bool CompressorFilter::isAcceptEncodingAllowed(const Http::ResponseHeaderMap& he
 
 bool CompressorFilterConfig::DirectionConfig::isContentTypeAllowed(
     const Http::RequestOrResponseHeaderMap& headers) const {
+
+  // Bypass if global wildcard (* or */*) is configured
+  if (has_global_wildcard_) {
+    return true;
+  }
+
   const Http::HeaderEntry* content_type = headers.ContentType();
-  if (content_type != nullptr && !content_type_values_.empty()) {
+  if (content_type != nullptr && (!content_type_values_.empty() || !content_type_prefix_patterns_.empty())) {
     const absl::string_view value =
         StringUtil::trim(StringUtil::cropRight(content_type->value().getStringView(), ";"));
-    return content_type_values_.find(value) != content_type_values_.end();
+
+    const std::string lower_value = absl::AsciiStrToLower(value);
+    // Exact-match lookup (O(1) hash set)
+    if (content_type_values_.find(lower_value) != content_type_values_.end()) {
+      return true;
+    }
+
+    // Subtype wildcard check (e.g., "text/*")
+    for (const auto& prefix : content_type_prefix_patterns_) {
+      if (absl::StartsWith(lower_value, prefix)) {
+        return true;
+      }
+    }
+
+    return false;
+
   }
 
   return true;

@@ -39,7 +39,8 @@ message Compressor {
     google.protobuf.UInt32Value min_content_length = 2;
 
     // Set of strings that allows specifying which mime-types yield compression; e.g.,
-    // ``application/json``, ``text/html``, etc.
+    // ``application/json``, ``text/html``, etc. Wildcards (such as ``text/*`` or ``*``) 
+    // are also supported to match MIME type prefixes or all content types respectively.
     //
     // When this field is not specified, compression will be applied to these following mime-types
     // and their synonyms:
